@@ -1,0 +1,74 @@
+{
+  "name": "@absolutejs/performance",
+  "version": "0.1.0-beta.0",
+  "description": "Core Web Vitals, server route latency, static asset timing and Postgres health for AbsoluteJS applications — four measurements, one console, Drizzle-native.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/absolutejs/performance.git"
+  },
+  "homepage": "https://github.com/absolutejs/performance",
+  "bugs": {
+    "url": "https://github.com/absolutejs/performance/issues"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "type": "module",
+  "license": "BSL-1.1",
+  "author": "Alex Kahn",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "browser": "./dist/client.js",
+      "import": "./dist/client.js",
+      "default": "./dist/client.js"
+    },
+    "./drizzle": {
+      "types": "./dist/drizzle.d.ts",
+      "import": "./dist/drizzle.js",
+      "default": "./dist/drizzle.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && bun build src/index.ts src/drizzle.ts --outdir dist --root ./src --sourcemap --target=bun --external drizzle-orm --external 'drizzle-orm/*' && bun build src/client.ts --outdir dist --root ./src --sourcemap --target=browser --format esm && tsc --project tsconfig.build.json",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write \"./**/*.{ts,json,md}\"",
+    "check:package": "bun run format && bun run typecheck && bun run test && bun run build",
+    "release": "bun run check:package && npm publish --access public --tag beta"
+  },
+  "keywords": [
+    "absolutejs",
+    "performance",
+    "web-vitals",
+    "rum",
+    "apm",
+    "latency",
+    "postgres",
+    "drizzle",
+    "observability"
+  ],
+  "peerDependencies": {
+    "drizzle-orm": ">=1.0.0-rc.4 <2"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.3.14",
+    "@types/bun": "1.3.14",
+    "drizzle-orm": "1.0.0-rc.4",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3"
+  }
+}
