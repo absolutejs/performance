@@ -185,23 +185,33 @@ export const createRouteTimingCollector = (
     return { flushed: pending.length };
   };
 
+  /**
+   * Start the periodic flush.
+   *
+   * Deliberately does NOT install SIGTERM/SIGINT handlers, however tempting a
+   * final flush on shutdown is. Registering a signal listener REPLACES the
+   * runtime's default terminate behaviour: unless the handler itself exits, the
+   * process survives the signal. A library that quietly does that to its host
+   * turns every `kill`, every orchestrator stop, and every build step that
+   * starts the server and signals it afterwards into a hang — which is exactly
+   * how this was found, wedging a compile that starts the app to prerender.
+   *
+   * `beforeExit` is safe and stays: it fires only when the loop has already
+   * emptied, so a short-lived process that ends on its own still reports.
+   *
+   * An application that wants a true shutdown drain owns its own shutdown, and
+   * should call `flush()` from a handler that then exits or re-raises.
+   */
   const start = (db: AnyPgDatabase, release?: string) => {
     const timer = setInterval(() => {
       void flush(db, release).catch(() => undefined);
     }, flushMs);
     // Telemetry must never hold the process open.
     timer.unref?.();
-
-    // A deploy replaces this process mid-window. Without a final flush the last
-    // half-minute of traffic is lost on every release — which is exactly the
-    // window a deploy most wants to compare against.
-    const drain = () => {
+    process.once("beforeExit", () => {
       clearInterval(timer);
       void flush(db, release).catch(() => undefined);
-    };
-    process.once("SIGTERM", drain);
-    process.once("SIGINT", drain);
-    process.once("beforeExit", drain);
+    });
 
     return () => clearInterval(timer);
   };

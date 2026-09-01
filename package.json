@@ -1,6 +1,6 @@
 {
   "name": "@absolutejs/performance",
-  "version": "0.1.0-beta.0",
+  "version": "0.1.1-beta.0",
   "description": "Core Web Vitals, server route latency, static asset timing and Postgres health for AbsoluteJS applications — four measurements, one console, Drizzle-native.",
   "repository": {
     "type": "git",

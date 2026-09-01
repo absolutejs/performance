@@ -63,9 +63,14 @@ app.afterResponse(({ request, response }) => {
 rather than two — UUIDs, long hex, numeric segments and prefixed object ids
 (`cs_test_…`) out of the box, plus any `idPatterns` you pass.
 
-The flush drains on `SIGTERM`, `SIGINT` and `beforeExit`. A deploy replaces the
-process mid-window, and without that drain the last half-minute of traffic is
-lost on every release — exactly the window a deploy most wants to compare.
+`start` installs the interval and a `beforeExit` flush, and **deliberately does
+not touch `SIGTERM`/`SIGINT`.** Registering a signal listener replaces the
+runtime's default terminate behaviour: unless the handler itself exits, the
+process survives the signal. A library that quietly does that to its host turns
+every `kill`, every orchestrator stop, and every build step that starts the app
+and signals it afterwards into a hang. If you want a true shutdown drain, you
+own your shutdown — call `flush()` from your own handler and then exit or
+re-raise the signal.
 
 ## Web Vitals
 

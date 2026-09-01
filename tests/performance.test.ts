@@ -150,6 +150,26 @@ describe("route timing collector", () => {
   });
 });
 
+describe("route timing shutdown", () => {
+  test("start does not take over the process's response to a signal", async () => {
+    const before = {
+      SIGINT: process.listenerCount("SIGINT"),
+      SIGTERM: process.listenerCount("SIGTERM"),
+    };
+    const stop = createRouteTimingCollector().start(db);
+    try {
+      // Registering a signal listener REPLACES the default terminate
+      // behaviour: unless the handler exits, the process survives the signal.
+      // A library that does that quietly turns every kill, orchestrator stop
+      // and build step that signals the app into a hang.
+      expect(process.listenerCount("SIGTERM")).toBe(before.SIGTERM);
+      expect(process.listenerCount("SIGINT")).toBe(before.SIGINT);
+    } finally {
+      stop();
+    }
+  });
+});
+
 describe("route reads", () => {
   const flushOne = async (
     route: string,
