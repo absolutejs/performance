@@ -1,5 +1,19 @@
 {
 	"contract": 1,
 	"name": "@absolutejs/performance",
-	"releases": []
+	"releases": [
+		{
+			"changes": [
+				{
+					"kind": "added",
+					"summary": "startResourceTiming accepts a transport (and onTransportError) so a host can send resource batches through its own acknowledged outbox; sendBeacon stays the default",
+					"symbols": [
+						"StartResourceTimingOptions"
+					]
+				}
+			],
+			"date": "2026-10-24",
+			"version": "0.1.1-beta.1"
+		}
+	]
 }

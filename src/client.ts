@@ -22,6 +22,13 @@ export type ResourceSample = {
 };
 
 export type StartResourceTimingOptions = {
+  /** Optional acknowledged/durable transport. The host owns retry and correlation. */
+  transport?: (batch: {
+    environment?: string;
+    release?: string;
+    resources: ResourceSample[];
+  }) => void | Promise<void>;
+  onTransportError?: (error: unknown) => void;
   /** Where samples are POSTed. */
   endpoint: string;
   environment?: string;
@@ -95,10 +102,23 @@ export const startResourceTiming = (
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const flush = () => {
+    if (timer !== undefined) clearTimeout(timer);
     timer = undefined;
     if (pending.length === 0) return;
     const batch = pending.splice(0, maxBatch);
-    const body = JSON.stringify({ environment, release, resources: batch });
+    if (pending.length) schedule();
+    const payload = { environment, release, resources: batch };
+    if (options.transport) {
+      try {
+        void Promise.resolve(options.transport(payload)).catch((error) =>
+          options.onTransportError?.(error),
+        );
+      } catch (error) {
+        options.onTransportError?.(error);
+      }
+      return;
+    }
+    const body = JSON.stringify(payload);
     // sendBeacon survives the page going away, which is exactly when the last
     // and most interesting samples are taken.
     if (typeof navigator !== "undefined" && navigator.sendBeacon)
