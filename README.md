@@ -155,3 +155,21 @@ Relic, Dynatrace, Vercel Speed Insights, Sentry Performance, SpeedCurve,
 pganalyze, and similar). Using it to measure your own applications — including
 commercial ones — is expressly permitted. Converts to Apache 2.0 on
 August 31, 2030. See `LICENSE`.
+
+## Custom resource transport
+
+`startResourceTiming` in `@absolutejs/performance/client` now accepts `transport`
+and `onTransportError`. Existing callers retain the sendBeacon path. The custom
+transport receives `{ environment, release, resources }` and may return a promise.
+Use it to feed an application-owned acknowledged outbox such as
+`@absolutejs/beacon/outbox`, adding session/release correlation at the host boundary.
+Rejected promises and synchronous throws reach `onTransportError`; this resource
+collector itself does not retry. Persist inside the transport before resolving if
+durability is required. Do not assume sendBeacon acceptance is a server receipt.
+
+Large resource bursts now drain over subsequent bounded batches instead of
+stranding the remainder until another observer notification. Explicit flushes
+cancel their previous scheduled timer. Resource query-string stripping and
+telemetry-path exclusions are preserved. `tests/client.test.ts` verifies burst
+draining, custom transport failure reporting, URL sanitization and exclusion.
+This is an unpublished local extension exercised by Hello World's playtest queue.
