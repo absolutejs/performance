@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 /**
  * The five tables the performance console reads.
  *
@@ -126,6 +127,13 @@ export const routeLatencyWindows = pgTable(
     count: integer().notNull().default(0),
     error_count: integer().notNull().default(0),
     id: bigserial({ mode: "number" }).primaryKey(),
+    /** Requests per latency bucket (`LATENCY_BUCKETS_MS`, then one for
+     *  anything slower): what p50 and p95 are read from. Counters merge by
+     *  adding, so two processes flushing the same window stay exact. */
+    latency_buckets: integer()
+      .array()
+      .notNull()
+      .default(sql`'{}'::integer[]`),
     /** Highest single request in the window — the tail users actually feel,
      *  which an average hides completely. */
     max_ms: doublePrecision().notNull().default(0),

@@ -5,6 +5,28 @@
 		{
 			"changes": [
 				{
+					"detail": "Every route window now keeps a latency histogram (`latency_buckets`: 10ms to 10s, log-spaced, then one for anything slower), merged bucket by bucket when two processes flush the same window. `routeLatency` reports `p50Ms`, `p95Ms` and the previous period (`previous: { calls, p95Ms }`); `routeTrend` adds `p95Ms` per hour; slow-route problems are judged on p95 (`slowRouteP95Ms`, default 1000ms), falling back to the mean only for windows written before the buckets. `histogramQuantile`, `mergeHistograms` and `LATENCY_BUCKETS_MS` are exported. Applications that own the schema add `latency_buckets integer[] NOT NULL DEFAULT '{}'` to `route_latency_windows`.",
+					"kind": "added",
+					"summary": "Route latency reports p50 and p95 from per-window histograms, with the previous period, and slow routes are judged on p95",
+					"symbols": [
+						"routeLatency",
+						"routeTrend",
+						"histogramQuantile",
+						"mergeHistograms",
+						"LATENCY_BUCKETS_MS",
+						"RouteLatencyRow",
+						"PerformanceThresholds",
+						"performanceDrizzleSchema",
+						"routeLatencyWindows"
+					]
+				}
+			],
+			"date": "2026-11-16",
+			"version": "0.1.1-beta.2"
+		},
+		{
+			"changes": [
+				{
 					"kind": "added",
 					"summary": "startResourceTiming accepts a transport (and onTransportError) so a host can send resource batches through its own acknowledged outbox; sendBeacon stays the default",
 					"symbols": [

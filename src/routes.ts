@@ -12,7 +12,7 @@
  */
 import { sql } from "drizzle-orm";
 import { and, desc, eq, gte } from "drizzle-orm";
-import type { AnyPgDatabase } from "./database";
+import { rowsOf, type AnyPgDatabase } from "./database";
 import { routeLatencyWindows } from "./drizzle";
 
 const DAY_MS = 86_400_000;
@@ -67,8 +67,68 @@ export const routeShape = (
   return `/${shaped.join("/")}`;
 };
 
+/**
+ * Upper bounds (ms) of the latency histogram every route window keeps; one
+ * more bucket counts anything slower than the last. Log-spaced, so a 12ms
+ * API call and a 4s report both land in a bucket that resolves them.
+ */
+export const LATENCY_BUCKETS_MS: readonly number[] = [
+  10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000,
+];
+const BUCKET_COUNT = LATENCY_BUCKETS_MS.length + 1;
+
+const bucketIndex = (durationMs: number) => {
+  const index = LATENCY_BUCKETS_MS.findIndex((bound) => durationMs <= bound);
+
+  return index === -1 ? LATENCY_BUCKETS_MS.length : index;
+};
+
+/** Element-wise sum of histograms (shorter ones read as zeros). */
+export const mergeHistograms = (histograms: readonly (readonly number[])[]) => {
+  const merged: number[] = Array.from({ length: BUCKET_COUNT }, () => 0);
+  for (const histogram of histograms)
+    histogram.forEach((count, index) => {
+      if (index < BUCKET_COUNT) merged[index] = (merged[index] ?? 0) + count;
+    });
+
+  return merged;
+};
+
+/**
+ * The latency at quantile `q` (0–1) of a histogram, interpolated inside its
+ * bucket; capped at the window's max so a bucket's bound never claims a
+ * request slower than any that ran. Null for an empty histogram.
+ */
+export const histogramQuantile = (
+  histogram: readonly number[],
+  q: number,
+  maxMs = Number.POSITIVE_INFINITY,
+) => {
+  const total = histogram.reduce((sum, count) => sum + count, 0);
+  if (total === 0) return null;
+  const rank = q * total;
+  let seen = 0;
+  for (let index = 0; index < histogram.length; index += 1) {
+    const count = histogram[index] ?? 0;
+    if (count > 0 && seen + count >= rank) {
+      const lower = index === 0 ? 0 : (LATENCY_BUCKETS_MS[index - 1] ?? 0);
+      const upper = LATENCY_BUCKETS_MS[index] ?? Math.max(lower, maxMs);
+      const within = (rank - seen) / count;
+
+      return Math.min(maxMs, lower + (upper - lower) * within);
+    }
+    seen += count;
+  }
+
+  return Math.min(
+    maxMs,
+    LATENCY_BUCKETS_MS[LATENCY_BUCKETS_MS.length - 1] ?? 0,
+  );
+};
+
 type Bucket = {
   count: number;
+  histogram: number[];
   errors: number;
   maxMs: number;
   method: string;
@@ -128,6 +188,8 @@ export const createRouteTimingCollector = (
     const bucket = buckets.get(key);
     if (bucket !== undefined) {
       bucket.count += 1;
+      const slot = bucketIndex(input.durationMs);
+      bucket.histogram[slot] = (bucket.histogram[slot] ?? 0) + 1;
       bucket.sumMs += input.durationMs;
       bucket.maxMs = Math.max(bucket.maxMs, input.durationMs);
       if (input.status >= SERVER_ERROR) bucket.errors += 1;
@@ -137,8 +199,11 @@ export const createRouteTimingCollector = (
     // A caller inventing unique paths must not grow this map without bound;
     // dropping the overflow is better than leaking memory to measure it.
     if (buckets.size >= maxTrackedRoutes) return;
+    const histogram: number[] = Array.from({ length: BUCKET_COUNT }, () => 0);
+    histogram[bucketIndex(input.durationMs)] = 1;
     buckets.set(key, {
       count: 1,
+      histogram,
       errors: input.status >= SERVER_ERROR ? 1 : 0,
       maxMs: input.durationMs,
       method: input.method,
@@ -160,6 +225,7 @@ export const createRouteTimingCollector = (
         pending.map((bucket) => ({
           count: bucket.count,
           error_count: bucket.errors,
+          latency_buckets: bucket.histogram,
           max_ms: bucket.maxMs,
           method: bucket.method,
           release: release ?? null,
@@ -172,6 +238,12 @@ export const createRouteTimingCollector = (
         set: {
           count: sql`${routeLatencyWindows.count} + excluded.count`,
           error_count: sql`${routeLatencyWindows.error_count} + excluded.error_count`,
+          // Bucket by bucket: what was stored plus what this process saw.
+          latency_buckets: sql`(
+            select coalesce(array_agg(coalesce(stored.n, 0) + coalesce(added.n, 0) order by slot), '{}')
+            from unnest(${routeLatencyWindows.latency_buckets}) with ordinality as stored(n, slot)
+            full join unnest(excluded.latency_buckets) with ordinality as added(n, slot) using (slot)
+          )`,
           max_ms: sql`greatest(${routeLatencyWindows.max_ms}, excluded.max_ms)`,
           sum_ms: sql`${routeLatencyWindows.sum_ms} + excluded.sum_ms`,
         },
@@ -221,6 +293,13 @@ export const createRouteTimingCollector = (
 
 export type RouteLatencyRow = {
   calls: number;
+  /** The median and tail, from the window's latency histogram; null until a
+   *  window recorded with buckets has been flushed. */
+  p50Ms: number | null;
+  p95Ms: number | null;
+  /** The same route over the period before this one, to say whether it got
+   *  slower: null when it saw no calls then. */
+  previous: { calls: number; p95Ms: number | null } | null;
   errorRate: number;
   errors: number;
   maxMs: number;
@@ -239,11 +318,77 @@ export type RouteLatencyRow = {
  * an 8s max is not a fast route, it is a route that is fast until it isn't, and
  * the mean alone would say it was fine.
  */
+type HistogramRow = {
+  current: boolean;
+  method: string;
+  n: number;
+  route: string;
+  slot: number;
+};
+
+/** Each route's latency histogram over this period and the one before it,
+ *  summed in the database (one row per route, period and bucket). */
+const routeHistograms = async (
+  db: AnyPgDatabase,
+  since: Date,
+  previousSince: Date,
+) => {
+  const rows = rowsOf<HistogramRow>(
+    await db.execute(sql`
+      select route, method,
+        window_start >= ${since} as current,
+        slot::int as slot, sum(n)::int as n
+      from ${routeLatencyWindows},
+        unnest(latency_buckets) with ordinality as bucket(n, slot)
+      where window_start >= ${previousSince}
+      group by route, method, current, slot
+    `),
+  );
+  const histograms = new Map<string, number[]>();
+  for (const row of rows) {
+    const key = `${row.current ? "now" : "before"}|${row.method}|${row.route}`;
+    const histogram =
+      histograms.get(key) ?? Array.from({ length: BUCKET_COUNT }, () => 0);
+    const index = Number(row.slot) - 1;
+    if (index >= 0 && index < BUCKET_COUNT)
+      histogram[index] = (histogram[index] ?? 0) + Number(row.n);
+    histograms.set(key, histogram);
+  }
+
+  return histograms;
+};
+
+type PreviousRow = { calls: number; method: string; route: string };
+
 export const routeLatency = async (
   db: AnyPgDatabase,
   days = DEFAULT_DAYS,
 ): Promise<RouteLatencyRow[]> => {
   const since = new Date(Date.now() - days * DAY_MS);
+  const previousSince = new Date(since.getTime() - days * DAY_MS);
+  const [histograms, previousCalls] = await Promise.all([
+    routeHistograms(db, since, previousSince),
+    db
+      .select({
+        calls: sql<number>`sum(${routeLatencyWindows.count})::int`,
+        method: routeLatencyWindows.method,
+        route: routeLatencyWindows.route,
+      })
+      .from(routeLatencyWindows)
+      .where(
+        and(
+          gte(routeLatencyWindows.window_start, previousSince),
+          sql`${routeLatencyWindows.window_start} < ${since}`,
+        ),
+      )
+      .groupBy(routeLatencyWindows.route, routeLatencyWindows.method),
+  ]);
+  const before = new Map(
+    (previousCalls as PreviousRow[]).map((row) => [
+      `${row.method}|${row.route}`,
+      Number(row.calls),
+    ]),
+  );
   const rows = await db
     .select({
       calls: sql<number>`sum(${routeLatencyWindows.count})::int`,
@@ -264,13 +409,28 @@ export const routeLatency = async (
     const errors = Number(row.errors);
     const totalMs = Number(row.totalMs);
 
+    const maxMs = Number(row.maxMs);
+    const key = `${row.method}|${row.route}`;
+    const histogram = histograms.get(`now|${key}`) ?? [];
+    const previousHistogram = histograms.get(`before|${key}`) ?? [];
+    const previousCount = before.get(key) ?? 0;
+
     return {
       calls,
       errorRate: calls > 0 ? errors / calls : 0,
       errors,
-      maxMs: Number(row.maxMs),
+      maxMs,
       meanMs: calls > 0 ? totalMs / calls : 0,
       method: row.method,
+      p50Ms: histogramQuantile(histogram, 0.5, maxMs),
+      p95Ms: histogramQuantile(histogram, 0.95, maxMs),
+      previous:
+        previousCount > 0
+          ? {
+              calls: previousCount,
+              p95Ms: histogramQuantile(previousHistogram, 0.95),
+            }
+          : null,
       route: row.route,
       totalMs,
     };
@@ -304,14 +464,38 @@ export const routeTrend = async (
     .groupBy(sql`1`)
     .orderBy(sql`1`);
 
+  const hourly = rowsOf<{ hour: string; n: number; slot: number }>(
+    await db.execute(sql`
+      select date_trunc('hour', window_start) as hour,
+        slot::int as slot, sum(n)::int as n
+      from ${routeLatencyWindows},
+        unnest(latency_buckets) with ordinality as bucket(n, slot)
+      where route = ${route} and window_start >= ${since}
+      group by hour, slot
+    `),
+  );
+  const histogramByHour = new Map<number, number[]>();
+  for (const row of hourly) {
+    const at = new Date(row.hour).getTime();
+    const histogram =
+      histogramByHour.get(at) ?? Array.from({ length: BUCKET_COUNT }, () => 0);
+    const index = Number(row.slot) - 1;
+    if (index >= 0 && index < BUCKET_COUNT)
+      histogram[index] = (histogram[index] ?? 0) + Number(row.n);
+    histogramByHour.set(at, histogram);
+  }
+
   return rows.map((row) => {
     const calls = Number(row.calls);
+    const at = new Date(row.bucket).getTime();
+    const maxMs = Number(row.maxMs);
 
     return {
-      at: new Date(row.bucket).getTime(),
+      at,
       calls,
-      maxMs: Number(row.maxMs),
+      maxMs,
       meanMs: calls > 0 ? Number(row.totalMs) / calls : 0,
+      p95Ms: histogramQuantile(histogramByHour.get(at) ?? [], 0.95, maxMs),
     };
   });
 };
