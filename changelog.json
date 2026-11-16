@@ -5,6 +5,20 @@
 		{
 			"changes": [
 				{
+					"detail": "databaseHealth listed primary keys and unique indexes among the indexes nothing uses, since no query had read them; they enforce a rule on every write and can never be dropped. They are left out now, and the rest are ordered largest first, which is where dropping one saves the most.",
+					"kind": "fixed",
+					"summary": "Unused indexes no longer include primary keys and unique constraints, and the largest come first",
+					"symbols": [
+						"databaseHealth"
+					]
+				}
+			],
+			"date": "2026-11-16",
+			"version": "0.1.1-beta.3"
+		},
+		{
+			"changes": [
+				{
 					"detail": "Every route window now keeps a latency histogram (`latency_buckets`: 10ms to 10s, log-spaced, then one for anything slower), merged bucket by bucket when two processes flush the same window. `routeLatency` reports `p50Ms`, `p95Ms` and the previous period (`previous: { calls, p95Ms }`); `routeTrend` adds `p95Ms` per hour; slow-route problems are judged on p95 (`slowRouteP95Ms`, default 1000ms), falling back to the mean only for windows written before the buckets. `histogramQuantile`, `mergeHistograms` and `LATENCY_BUCKETS_MS` are exported. Applications that own the schema add `latency_buckets integer[] NOT NULL DEFAULT '{}'` to `route_latency_windows`.",
 					"kind": "added",
 					"summary": "Route latency reports p50 and p95 from per-window histograms, with the previous period, and slow routes are judged on p95",

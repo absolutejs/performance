@@ -135,10 +135,15 @@ export const databaseHealth = async (
   const unusedIndexes = await readRows<UnusedIndex>(
     db,
     sql`
-      select relname, indexrelname, idx_scan::int as scans
-      from pg_stat_user_indexes
-      where idx_scan = 0
-      order by relname
+      select stats.relname, stats.indexrelname, stats.idx_scan::int as scans
+      from pg_stat_user_indexes as stats
+      join pg_index as definition on definition.indexrelid = stats.indexrelid
+      -- A primary key or unique index enforces a rule on every write whether
+      -- or not a query reads it: never a candidate to drop.
+      where stats.idx_scan = 0
+        and not definition.indisprimary
+        and not definition.indisunique
+      order by pg_relation_size(stats.indexrelid) desc, stats.relname
       limit ${UNUSED_INDEX_LIMIT}
     `,
   );

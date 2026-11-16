@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 /**
  * Tests against real Postgres (PGlite, in-process).
  *
@@ -368,6 +369,19 @@ describe("databaseHealth", () => {
     expect(health.slowQueries).toEqual([]);
     expect(Array.isArray(health.tableScans)).toBe(true);
     expect(Array.isArray(health.unusedIndexes)).toBe(true);
+  });
+
+  test("never offers a primary key or unique index as unused", async () => {
+    await db.execute(
+      sql`CREATE TABLE ledger (id serial PRIMARY KEY, code text UNIQUE, note text)`,
+    );
+    await db.execute(sql`CREATE INDEX ledger_note_idx ON ledger (note)`);
+    const { unusedIndexes } = await databaseHealth(db);
+    const ledger = unusedIndexes.filter((index) => index.relname === "ledger");
+
+    expect(ledger.map((index) => index.indexrelname)).toEqual([
+      "ledger_note_idx",
+    ]);
   });
 });
 
