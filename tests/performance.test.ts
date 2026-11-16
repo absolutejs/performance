@@ -18,6 +18,7 @@ import {
   recordWebVital,
   resourceTimings,
   rollUpWebVitals,
+  histogramQuantile,
   routeLatency,
   routeShape,
   routeTrend,
@@ -54,6 +55,7 @@ const SCHEMA = `
   CREATE TABLE route_latency_windows (
     id bigserial PRIMARY KEY, count integer NOT NULL DEFAULT 0,
     error_count integer NOT NULL DEFAULT 0,
+    latency_buckets integer[] NOT NULL DEFAULT '{}'::integer[],
     max_ms double precision NOT NULL DEFAULT 0, method varchar(10) NOT NULL,
     release varchar(160), route varchar(256) NOT NULL,
     sum_ms double precision NOT NULL DEFAULT 0, window_start timestamp NOT NULL
@@ -202,6 +204,55 @@ describe("route reads", () => {
     expect(rows[1]?.maxMs).toBe(4000);
   });
 
+  test("reads p50 and p95 from the latency buckets", async () => {
+    // 90 quick calls and 10 slow ones: the mean hides the tail, p95 does not.
+    await flushOne("/mixed", [
+      ...Array.from({ length: 90 }, () => ({ durationMs: 20 })),
+      ...Array.from({ length: 10 }, () => ({ durationMs: 3000 })),
+    ]);
+    const [row] = await routeLatency(db);
+
+    expect(row?.p50Ms).toBeGreaterThan(10);
+    expect(row?.p50Ms).toBeLessThanOrEqual(25);
+    expect(row?.p95Ms).toBeGreaterThan(2500);
+    expect(row?.p95Ms).toBeLessThanOrEqual(3000);
+  });
+
+  test("two flushes of one window add their buckets", async () => {
+    await flushOne("/twice", [{ durationMs: 20 }]);
+    await flushOne("/twice", [{ durationMs: 20 }, { durationMs: 700 }]);
+    const [stored] = await db.select().from(routeLatencyWindows);
+
+    expect(stored?.count).toBe(3);
+    expect(stored?.latency_buckets.reduce((sum, n) => sum + n, 0)).toBe(3);
+    expect(stored?.latency_buckets[1]).toBe(2);
+    expect(stored?.latency_buckets[6]).toBe(1);
+  });
+
+  test("a route compares with the period before", async () => {
+    const DAY = 86_400_000;
+    await db.insert(routeLatencyWindows).values({
+      count: 5,
+      latency_buckets: [0, 0, 5],
+      max_ms: 40,
+      method: "GET",
+      route: "/compared",
+      sum_ms: 150,
+      window_start: new Date(Date.now() - 10 * DAY),
+    });
+    await flushOne("/compared", [{ durationMs: 400 }]);
+    const [row] = await routeLatency(db, 7);
+
+    expect(row?.previous?.calls).toBe(5);
+    expect(row?.previous?.p95Ms).toBeLessThanOrEqual(50);
+    expect(row?.p95Ms).toBeGreaterThan(250);
+  });
+
+  test("an empty histogram has no quantile", () => {
+    expect(histogramQuantile([], 0.95)).toBeNull();
+    expect(histogramQuantile([0, 0, 0], 0.95)).toBeNull();
+  });
+
   test("an error rate is calls, not windows", async () => {
     await flushOne("/api", [
       { durationMs: 10 },
@@ -323,9 +374,10 @@ describe("databaseHealth", () => {
 describe("problems", () => {
   const slowRoute = async () => {
     const collector = createRouteTimingCollector();
+    // Over budget on the tail (p95 > 1s) as well as the mean (> 500ms).
     for (let index = 0; index < 30; index += 1)
       collector.record({
-        durationMs: 900,
+        durationMs: 1500,
         method: "GET",
         pathname: "/slow",
         status: 200,
@@ -370,8 +422,9 @@ describe("problems", () => {
 
   test("thresholds are the caller's to set", async () => {
     await slowRoute();
+    // The route was recorded with latency buckets, so its p95 is what is judged.
     expect(
-      await performanceProblems(db, 7, { slowRouteMeanMs: 2000 }),
+      await performanceProblems(db, 7, { slowRouteP95Ms: 2000 }),
     ).toHaveLength(0);
   });
 

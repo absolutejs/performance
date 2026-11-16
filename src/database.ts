@@ -56,7 +56,7 @@ export type DatabaseHealth = {
 };
 
 /** Drivers disagree about whether `execute` returns rows or `{ rows }`. */
-const rowsOf = <T>(result: unknown): T[] => {
+export const rowsOf = <T>(result: unknown): T[] => {
   if (Array.isArray(result)) return result as T[];
   const { rows } = result as { rows?: unknown };
 

@@ -43,6 +43,9 @@ export {
 
 export {
   createRouteTimingCollector,
+  histogramQuantile,
+  LATENCY_BUCKETS_MS,
+  mergeHistograms,
   routeLatency,
   routeShape,
   routeTrend,

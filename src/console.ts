@@ -120,7 +120,10 @@ export type DecidedPerfProblem = PerfProblem & {
 };
 
 export type PerformanceThresholds = {
-  /** Mean response time at which a route is a problem. Default 500ms. */
+  /** p95 response time at which a route is a problem. Default 1000ms. */
+  slowRouteP95Ms?: number;
+  /** Mean response time at which a route is a problem, for history written
+   *  before latency buckets (no p95). Default 500ms. */
   slowRouteMeanMs?: number;
   /** Mean load time at which a static asset is a problem. Default 1500ms. */
   slowResourceMs?: number;
@@ -145,6 +148,7 @@ const DEFAULT_THRESHOLDS: Required<PerformanceThresholds> = {
   slowQueryMeanMs: 500,
   slowResourceMs: 1500,
   slowRouteMeanMs: 500,
+  slowRouteP95Ms: 1000,
 };
 
 /**
@@ -184,7 +188,19 @@ export const performanceProblems = async (
 
   for (const route of routes) {
     if (route.calls < limits.minRouteCalls) continue;
-    if (route.meanMs > limits.slowRouteMeanMs)
+    // The tail when there is one (windows flushed with latency buckets);
+    // the mean only for history written before them.
+    if (route.p95Ms !== null) {
+      if (route.p95Ms > limits.slowRouteP95Ms)
+        problems.push({
+          detail: `p95 ${Math.round(route.p95Ms)}ms over ${route.calls} calls`,
+          fingerprint: `route:${route.method}:${route.route}`,
+          kind: "route",
+          severity: route.p95Ms > limits.slowRouteP95Ms * 2 ? "high" : "medium",
+          subject: `${route.method} ${route.route}`,
+          value: route.p95Ms,
+        });
+    } else if (route.meanMs > limits.slowRouteMeanMs)
       problems.push({
         detail: `${Math.round(route.meanMs)}ms average over ${route.calls} calls`,
         fingerprint: `route:${route.method}:${route.route}`,
